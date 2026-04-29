@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eurasian Otter Observations Map</title>
+
+  <!-- Leaflet styles -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  >
+
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1f2933;
+      --muted: #52606d;
+      --accent: #0b7285;
+      --border: #d9e2ec;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 12px;
+      gap: 10px;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.1rem, 2.8vw, 1.5rem);
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.35;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+
+    button.secondary {
+      background: #fff;
+      color: var(--accent);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 8px;
+      min-height: 1.2em;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    #map {
+      flex: 1;
+      min-height: 65dvh;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .popup-label {
+      font-weight: 600;
+    }
+
+    @media (max-width: 640px) {
+      .app {
+        padding: 10px;
+      }
+
+      #map {
+        min-height: 72dvh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="panel">
+      <h1>Recent iNaturalist Eurasian Otter Observations</h1>
+      <p>Showing recent observations for <strong>Lutra lutra</strong> with valid coordinates.</p>
+      <div class="controls">
+        <button id="refreshBtn" type="button">Refresh observations</button>
+        <button id="clearBtn" type="button" class="secondary">Clear markers</button>
+      </div>
+      <div id="status" class="status" aria-live="polite"></div>
+    </section>
+
+    <section id="map" aria-label="Map of otter observations"></section>
+  </main>
+
+  <!-- Leaflet runtime -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script>
+    // Fixed species target requested by the task.
+    const TARGET_TAXON = "Lutra lutra";
+    const API_URL = `https://api.inaturalist.org/v1/observations?taxon_name=${encodeURIComponent(TARGET_TAXON)}&order_by=observed_on&order=desc&per_page=100`;
+
+    const statusEl = document.getElementById("status");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const clearBtn = document.getElementById("clearBtn");
+
+    const map = L.map("map", {
+      worldCopyJump: true
+    }).setView([30, 15], 2);
+
+    // Non-OSM basemap: Esri World Imagery.
+    L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: "Tiles &copy; Esri"
+      }
+    ).addTo(map);
+
+    const markerLayer = L.layerGroup().addTo(map);
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    // Escape untrusted text before composing popup HTML.
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function hasValidCoords(obs) {
+      const coords = obs && obs.geojson && obs.geojson.coordinates;
+      if (!Array.isArray(coords) || coords.length < 2) {
+        return false;
+      }
+
+      const lng = Number(coords[0]);
+      const lat = Number(coords[1]);
+      const validNumbers = Number.isFinite(lat) && Number.isFinite(lng);
+      const inRange = lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+
+      return validNumbers && inRange;
+    }
+
+    function clearMarkers() {
+      markerLayer.clearLayers();
+      setStatus("Markers cleared.");
+    }
+
+    async function loadObservations() {
+      refreshBtn.disabled = true;
+      setStatus("Loading recent observations...");
+
+      try {
+        const response = await fetch(API_URL, { headers: { Accept: "application/json" } });
+        if (!response.ok) {
+          throw new Error(`API request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        const observations = Array.isArray(data.results) ? data.results : [];
+        const valid = observations.filter(hasValidCoords);
+
+        markerLayer.clearLayers();
+
+        if (valid.length === 0) {
+          setStatus("No observations with valid coordinates were returned.");
+          return;
+        }
+
+        const bounds = [];
+
+        for (const obs of valid) {
+          const [lng, lat] = obs.geojson.coordinates;
+
+          const commonName = obs.taxon && obs.taxon.preferred_common_name ? obs.taxon.preferred_common_name : "Unknown";
+          const scientificName = obs.taxon && obs.taxon.name ? obs.taxon.name : TARGET_TAXON;
+          const observedOn = obs.observed_on || obs.observed_on_string || "Unknown";
+          const username = obs.user && obs.user.login ? obs.user.login : "Unknown";
+          const uri = obs.uri || "https://www.inaturalist.org/";
+
+          const popupHtml = `
+            <div>
+              <div><span class="popup-label">Name:</span> ${escapeHtml(commonName)} (${escapeHtml(scientificName)})</div>
+              <div><span class="popup-label">Observation date:</span> ${escapeHtml(observedOn)}</div>
+              <div><span class="popup-label">Observer:</span> ${escapeHtml(username)}</div>
+              <div><a href="${encodeURI(uri)}" target="_blank" rel="noopener noreferrer">View on iNaturalist</a></div>
+            </div>
+          `;
+
+          const marker = L.marker([lat, lng]).bindPopup(popupHtml.trim());
+          markerLayer.addLayer(marker);
+          bounds.push([lat, lng]);
+        }
+
+        map.fitBounds(bounds, {
+          padding: [24, 24],
+          maxZoom: 8
+        });
+
+        setStatus(`Plotted ${valid.length} observation${valid.length === 1 ? "" : "s"}.`);
+      } catch (error) {
+        console.error(error);
+        setStatus("Could not load observations. Please try refreshing.");
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    refreshBtn.addEventListener("click", loadObservations);
+    clearBtn.addEventListener("click", clearMarkers);
+
+    // Auto-load observations on first paint.
+    loadObservations();
+  </script>
+</body>
+</html>
